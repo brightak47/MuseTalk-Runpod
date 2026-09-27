@@ -1,0 +1,13 @@
+{
+  "title": "MuseTalk Lip Sync (Adpence)",
+  "description": "MuseTalk 1.5 lip-sync: drives a base video or image with an audio track. Returns the result to Cloudflare R2 (if configured), the network volume, or inline base64.",
+  "type": "serverless",
+  "category": "video",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 40,
+    "gpuCount": 1,
+    "gpuIds": "ADA_24,AMPERE_24,ADA_32_PRO",
+    "allowedCudaVersions": ["12.8", "12.4", "12.1", "11.8"]
+  }
+}
