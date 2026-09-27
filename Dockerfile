@@ -29,6 +29,12 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY download_weights.py /app/MuseTalk/download_weights.py
 RUN python download_weights.py
 
+# The PyTorch base image ships a conda ffmpeg built without libx264, and it shadows the apt one on
+# PATH. MuseTalk shells out to plain `ffmpeg`, so it picked up the crippled build and died with
+# "Unrecognized option 'crf'" after a full, successful inference pass. Remove the conda binaries and
+# prove the remaining ffmpeg can actually encode H.264.
+RUN rm -f /opt/conda/bin/ffmpeg /opt/conda/bin/ffprobe  && ffmpeg -hide_banner -h encoder=libx264 > /dev/null  && ffmpeg -hide_banner -version | head -1
+
 ENV FFMPEG_PATH=/usr/bin
 COPY handler.py /app/MuseTalk/handler.py
 CMD ["python", "-u", "handler.py"]
