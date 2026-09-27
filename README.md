@@ -38,5 +38,6 @@ MuseTalk code and weights are MIT; sd-vae-ft-mse (MIT), whisper-tiny (Apache-2.0
 (Apache-2.0) are all permissive. The image deliberately omits MuseTalk's `syncnet` checkpoint
 (ByteDance/LatentSync, OpenRAIL++) because it is only used for training.
 
-One loose end: `face-parse-bisent` (`79999_iter.pth`) is fetched from a Google Drive link with no
-stated licence. It is required for v15 face blending. Have this reviewed before commercial launch.
+`face-parse-bisent` (`79999_iter.pth`), required for v15 face blending, is pulled from the
+Hugging Face mirror `ManyOtherFunctions/face-parse-bisent` (WTFPL) rather than upstream's
+unlicensed Google Drive link — same file, stated licence, and no gdown quota failures in the build.
