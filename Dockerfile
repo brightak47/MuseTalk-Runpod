@@ -13,16 +13,19 @@ WORKDIR /app
 RUN git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git /app/MuseTalk
 WORKDIR /app/MuseTalk
 
+# huggingface_hub is pinned below 1.0 on purpose: MuseTalk pins a transformers release that
+# requires <1.0, and 2.0.0 also renamed the CLI. download_weights.py uses the Python API, so the
+# pin costs us nothing.
 RUN pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir -U openmim huggingface_hub runpod requests boto3 \
+ && pip install --no-cache-dir -U openmim runpod requests boto3 "huggingface_hub>=0.23,<1.0" \
  && mim install mmengine \
  && mim install "mmcv==2.0.1" \
  && mim install "mmdet==3.1.0" \
- && mim install "mmpose==1.1.0"
+ && mim install "mmpose==1.1.0" \
+ && python -c "import transformers, huggingface_hub; print('transformers', transformers.__version__, '| hub', huggingface_hub.__version__)"
 
-# Weights (~5 GB), fetched through the huggingface_hub Python API: `huggingface-cli` was renamed to
-# `hf` in recent releases, so shelling out to it fails with exit 127 depending on the version pip
-# resolves. The script verifies every file exists before the build can succeed.
+# Weights (~5 GB). The script verifies every file exists, so a missing weight fails the build
+# rather than the first inference request.
 COPY download_weights.py /app/MuseTalk/download_weights.py
 RUN python download_weights.py
 
