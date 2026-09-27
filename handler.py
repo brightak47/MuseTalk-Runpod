@@ -129,11 +129,20 @@ def handler(job):
             encoding="utf-8",
         )
 
+        # inference.py's argparse default for --unet_config points at models/musetalk/config.json,
+        # a filename upstream's own download script never produces. Pass the real paths.
+        version = str(job_input.get("version", "v15"))
+        weights = "musetalkV15" if version == "v15" else "musetalk"
+        unet_name = "unet.pth" if version == "v15" else "pytorch_model.bin"
+
         command = [
             "python", "-m", "scripts.inference",
             "--inference_config", str(config_path),
             "--result_dir", str(result_dir),
-            "--version", "v15",
+            "--version", version,
+            "--unet_config", f"./models/{weights}/musetalk.json",
+            "--unet_model_path", f"./models/{weights}/{unet_name}",
+            "--whisper_dir", "./models/whisper",
             "--fps", str(int(job_input.get("fps", 25))),
             "--extra_margin", str(int(job_input.get("extra_margin", 10))),
             "--parsing_mode", str(job_input.get("parsing_mode", "jaw")),
