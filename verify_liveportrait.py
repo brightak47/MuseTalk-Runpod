@@ -113,4 +113,17 @@ if "c_d_eyes_i[0][0]" not in ratio_src:
     sys.exit("calc_combined_eye_ratio changed its indexing; the c_eyes_lst shape in idle_template is now wrong")
 print("c_eyes_lst shape contract holds")
 
+# 7. The flags animate() sets must exist on InferenceConfig, because that -- not ArgumentConfig -- is where
+# execute() reads them. Setting an unknown name would quietly leave LivePortrait on its default, which is
+# how an entire build shipped with eye retargeting "enabled" and no blink in any frame.
+import liveportrait_runner  # noqa: E402
+
+missing_cfg = [f for f in liveportrait_runner.INFERENCE_FIELDS if not hasattr(InferenceConfig, f)]
+if missing_cfg:
+    sys.exit(f"InferenceConfig is missing {missing_cfg}; animate() would run with defaults instead")
+execute_src = inspect.getsource(lp_pipeline.LivePortraitPipeline.execute)
+if "inf_cfg.flag_eye_retargeting" not in execute_src:
+    sys.exit("execute() no longer reads flag_eye_retargeting off inf_cfg; recheck where flags belong")
+print(f"all {len(liveportrait_runner.INFERENCE_FIELDS)} inference flags exist where execute() reads them")
+
 print("liveportrait verification passed")

@@ -29,6 +29,21 @@ WEIGHTS = Path(os.environ.get("LIVEPORTRAIT_WEIGHTS", "/app/MuseTalk/models/live
 
 _pipeline = None
 
+# Every InferenceConfig field animate() sets. Named here so the build gate can check them against the real
+# dataclass without duplicating the list, since a rename shows up as a default silently taking over.
+INFERENCE_FIELDS = (
+    "flag_eye_retargeting",
+    "flag_lip_retargeting",
+    "flag_relative_motion",
+    "animation_region",
+    "flag_normalize_lip",
+    "flag_stitching",
+    "flag_pasteback",
+    "flag_do_crop",
+    "driving_option",
+    "driving_multiplier",
+)
+
 
 def pipeline():
     """
@@ -140,33 +155,62 @@ def animate(source_image: Path, driving: Path, out_dir: Path, **options) -> Path
     # silent -- a clip that looks fine until you notice the head never moves.
     relative_motion = False if eye_retargeting else bool(options.get("relative_motion", True))
 
+    pipe = pipeline()
+
+    # Where the behaviour flags actually have to go.
+    #
+    # execute() reads args for exactly three things -- source, driving and flag_crop_driving_video -- and
+    # takes every other decision from inf_cfg, which is the InferenceConfig the pipeline was constructed
+    # with. Upstream's inference.py bridges the two with
+    #
+    #     inference_cfg = partial_fields(InferenceConfig, args.__dict__)
+    #
+    # before constructing the pipeline. Building the pipeline directly, as this module does, skips that
+    # step, so flags passed only in ArgumentConfig are accepted, ignored, and every run silently uses the
+    # defaults. That is why an earlier build could set flag_eye_retargeting and still never blink, and why
+    # animation_region appeared to do nothing. The pipeline is cached per worker and jobs are serial, so
+    # applying them per call is safe.
+    cfg = pipe.live_portrait_wrapper.inference_cfg
+    wanted = {
+        # The only place c_eyes_lst is ever read.
+        "flag_eye_retargeting": eye_retargeting,
+        # Left off: MuseTalk owns the mouth, and turning this on would hand it to LivePortrait.
+        "flag_lip_retargeting": False,
+        "flag_relative_motion": relative_motion,
+        # Pose only by default: see the module docstring on why the mouth is left for MuseTalk. With a
+        # template driver this cannot transfer expression in any case -- LivePortrait gates that branch on
+        # flag_is_driving_video -- but it still selects which of scale, t and R are taken from the template.
+        "animation_region": str(options.get("animation_region", "pose")),
+        "flag_normalize_lip": bool(options.get("normalize_lip", False)),
+        "flag_stitching": bool(options.get("stitching", True)),
+        "flag_pasteback": bool(options.get("pasteback", True)),
+        "flag_do_crop": bool(options.get("do_crop", True)),
+        "driving_option": str(options.get("driving_option", "expression-friendly")),
+        "driving_multiplier": float(options.get("driving_multiplier", 1.0)),
+    }
+    assert set(wanted) == set(INFERENCE_FIELDS), "INFERENCE_FIELDS is out of step with animate()"
+    for field, value in wanted.items():
+        # Checked rather than assumed: a renamed field would otherwise set a harmless new attribute and
+        # leave the real one at its default, which is precisely the failure this block exists to fix.
+        if not hasattr(cfg, field):
+            raise RuntimeError(
+                f"InferenceConfig has no {field!r}; LivePortrait would silently run with its default. "
+                "Check src/config/inference_config.py before running."
+            )
+        setattr(cfg, field, value)
+
     args = ArgumentConfig(
         source=str(source_image),
         driving=str(driving),
         output_dir=str(out_dir),
-        # Pose only by default: see the module docstring on why the mouth is left for MuseTalk. Note that
-        # with a template driver this has no effect on expression at all -- LivePortrait gates the "exp"
-        # branch on flag_is_driving_video -- so "all" and "pose" produce byte-identical output here.
-        animation_region=str(options.get("animation_region", "pose")),
-        flag_normalize_lip=bool(options.get("normalize_lip", False)),
-        flag_relative_motion=relative_motion,
-        # The only place c_eyes_lst is ever read.
-        flag_eye_retargeting=eye_retargeting,
-        # Left off: MuseTalk owns the mouth, and turning this on would hand it to LivePortrait.
-        flag_lip_retargeting=False,
-        driving_option=str(options.get("driving_option", "expression-friendly")),
-        driving_multiplier=float(options.get("driving_multiplier", 1.0)),
-        flag_stitching=bool(options.get("stitching", True)),
-        flag_pasteback=bool(options.get("pasteback", True)),
-        flag_do_crop=bool(options.get("do_crop", True)),
+        # The one behaviour flag execute() really does read off args.
         flag_crop_driving_video=bool(options.get("crop_driving_video", False)),
         det_thresh=float(options.get("det_thresh", 0.15)),
         scale=float(options.get("scale", 2.3)),
         vy_ratio=float(options.get("vy_ratio", -0.125)),
-        flag_use_half_precision=bool(options.get("half_precision", True)),
     )
 
-    animated, _side_by_side = pipeline().execute(args)
+    animated, _side_by_side = pipe.execute(args)
     produced = Path(animated)
     if not produced.is_file():
         raise RuntimeError(f"LivePortrait reported {produced} but it does not exist")

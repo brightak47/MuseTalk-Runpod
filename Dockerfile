@@ -66,7 +66,7 @@ RUN grep -vE '^(gradio|onnxruntime)' /app/LivePortrait/requirements_base.txt > /
 COPY face_detect.py /app/MuseTalk/face_detect.py
 COPY liveportrait_runner.py /app/MuseTalk/liveportrait_runner.py
 
-# Proven at build time: the weights we may use are present, the ones we may not are absent, the MediaPipe
+# Proven at build time: the weights we may use are present, the ones we may not are absent, the YuNet
 # substitution takes hold, and LivePortrait imports. The licence half is the point -- a rebuild that
 # quietly pulled InsightFace back in would be an infringement, not a bug, so it fails the build.
 COPY verify_liveportrait.py /app/MuseTalk/verify_liveportrait.py
