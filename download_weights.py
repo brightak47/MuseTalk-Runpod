@@ -3,8 +3,16 @@
 Uses huggingface_hub's Python API rather than the CLI: `huggingface-cli` was renamed to `hf` in
 recent releases, so shelling out to it breaks the build (exit 127) depending on the version pulled.
 
-Deliberately omitted: MuseTalk's syncnet checkpoint (ByteDance/LatentSync, OpenRAIL++) — it is only
-used for training, and leaving it out keeps this image permissively licensed.
+Deliberately omitted, and both omissions are licence decisions rather than size ones:
+
+  * MuseTalk's syncnet checkpoint (ByteDance/LatentSync, OpenRAIL++) is only used for training.
+  * InsightFace's buffalo_l models (det_10g.onnx, 2d106det.onnx), which LivePortrait's Cropper would
+    otherwise load. InsightFace releases its pretrained models for non-commercial research only, and the
+    fact that KwaiVGI's weights repo redistributes them under its own MIT card does not change their terms.
+    mediapipe_face.py replaces them with MediaPipe (Apache 2.0); see it for why that substitution is small.
+
+LivePortrait's own weights ARE included and are MIT: the four base models, the stitching/retargeting
+module, and landmark.onnx, which is what actually produces the precise landmarks.
 """
 
 import shutil
@@ -28,6 +36,14 @@ DOWNLOADS = [
     ("openai/whisper-tiny", "pytorch_model.bin", "whisper/pytorch_model.bin"),
     ("openai/whisper-tiny", "preprocessor_config.json", "whisper/preprocessor_config.json"),
     ("yzd-v/DWPose", "dw-ll_ucoco_384.pth", "dwpose/dw-ll_ucoco_384.pth"),
+    # LivePortrait (MIT) -- animates a still portrait so the presenter has head motion and blinks before
+    # MuseTalk syncs the mouth. Note what is NOT here: insightface/models/buffalo_l/*.
+    ("KwaiVGI/LivePortrait", "liveportrait/base_models/appearance_feature_extractor.pth", "liveportrait/base_models/appearance_feature_extractor.pth"),
+    ("KwaiVGI/LivePortrait", "liveportrait/base_models/motion_extractor.pth", "liveportrait/base_models/motion_extractor.pth"),
+    ("KwaiVGI/LivePortrait", "liveportrait/base_models/spade_generator.pth", "liveportrait/base_models/spade_generator.pth"),
+    ("KwaiVGI/LivePortrait", "liveportrait/base_models/warping_module.pth", "liveportrait/base_models/warping_module.pth"),
+    ("KwaiVGI/LivePortrait", "liveportrait/retargeting_models/stitching_retargeting_module.pth", "liveportrait/retargeting_models/stitching_retargeting_module.pth"),
+    ("KwaiVGI/LivePortrait", "liveportrait/landmark.onnx", "liveportrait/landmark.onnx"),
     # Mirror of the BiSeNet face-parsing checkpoint that upstream fetches from Google Drive.
     # Same file, WTFPL-licensed, and no gdown/quota fragility in the build.
     ("ManyOtherFunctions/face-parse-bisent", "79999_iter.pth", "face-parse-bisent/79999_iter.pth"),

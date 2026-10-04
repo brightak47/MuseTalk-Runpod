@@ -8,6 +8,20 @@ Input (job["input"]):
     bbox_shift                 optional   default 0 (v1 only; v15 uses its own offset)
     extra_margin               optional   default 10
     parsing_mode               optional   "jaw" (default) or "raw"
+
+    mode                       optional   "lipsync" (default) | "animate" | "present"
+
+      lipsync   what this worker always did: sync a mouth onto a face you supply.
+      animate   LivePortrait only: one still portrait -> a short clip with head motion. No audio needed.
+                Done once per avatar and cached; the result is what `lipsync` should be driven with.
+      present   both, in one job: portrait + audio -> animated idle -> lip-synced presentation video.
+                Chaining them here rather than across two endpoints saves a cold start and an upload of
+                the intermediate clip, which for a 15 GB image is most of the wall clock.
+
+    seconds                    animate/present: length of the idle clip, default 6
+    fps                        default 25
+    animation_region           "pose" (default), "all", "exp", "eyes", "lip" -- see liveportrait_runner
+    driving_url | driving_b64  optional: your own driving video or .pkl template instead of generated idle
     output_key                 optional   destination key, e.g. "lessons/42/slice_000.mp4"
     project                    optional   echoed back for cost attribution
 
@@ -65,7 +79,7 @@ def _decode(data: str, dest: Path) -> Path:
 
 def _resolve_media(job_input: dict, kind: str, work: Path) -> Path:
     """kind is 'audio', 'video' or 'image'; accepts <kind>_url or <kind>_b64."""
-    suffix = {"audio": ".wav", "video": ".mp4", "image": ".png"}[kind]
+    suffix = {"audio": ".wav", "video": ".mp4", "image": ".png", "driving": ".pkl"}[kind]
     dest = work / f"input_{kind}{suffix}"
     if job_input.get(f"{kind}_url"):
         return _fetch(job_input[f"{kind}_url"], dest)
@@ -104,19 +118,100 @@ def _upload(path: Path, key: str):
     )
 
 
+def _animate(job_input: dict, portrait: Path, work: Path) -> Path:
+    """
+    One still portrait -> a short clip of a presenter who looks alive.
+
+    The motion comes from a generated template rather than footage unless a driving file is supplied: it is
+    numeric pose data, so it carries no likeness, is identical between runs, and is built from this
+    portrait's own latents so the face cannot drift towards someone else's.
+    """
+    import liveportrait_runner as lp
+
+    fps = int(job_input.get("fps", 25))
+    seconds = float(job_input.get("seconds", 6))
+
+    driving = _resolve_media(job_input, "driving", work)
+    if driving is None:
+        driving = lp.idle_template(
+            portrait, seconds=seconds, fps=fps, out_path=work / "idle.pkl",
+            sway_degrees=float(job_input.get("sway_degrees", 2.0)),
+            sway_seconds=float(job_input.get("sway_seconds", 6.0)),
+            blink_seconds=float(job_input.get("blink_seconds", 4.0)),
+        )
+
+    return lp.animate(
+        portrait, driving, work / "animated",
+        animation_region=job_input.get("animation_region", "pose"),
+        normalize_lip=job_input.get("normalize_lip", False),
+        driving_multiplier=job_input.get("driving_multiplier", 1.0),
+    )
+
+
+def _deliver(output: Path, job_input: dict, started: float, work: Path, extra: dict | None = None) -> dict:
+    """
+    Hand a finished video back the same way whichever mode produced it.
+
+    R2 when it is configured, the network volume when one is attached, and base64 only for something small
+    -- a presentation is minutes long and will not fit in a response, so a bucket is effectively required
+    for `present`.
+    """
+    response = {
+        "seconds": round(time.time() - started, 1),
+        "size_bytes": output.stat().st_size,
+    }
+    response.update(extra or {})
+    if job_input.get("project"):
+        response["project"] = job_input["project"]
+
+    key = job_input.get("output_key") or f"musetalk/{uuid.uuid4()}.mp4"
+    url = _upload(output, key)
+    if url:
+        response["video_url"] = url
+        response["output_key"] = key
+    elif VOLUME_DIR.is_dir():
+        destination = VOLUME_DIR / key
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output, destination)
+        response["video_path"] = str(destination)
+    elif output.stat().st_size <= INLINE_LIMIT_MB * 1024 * 1024:
+        response["video_b64"] = base64.b64encode(output.read_bytes()).decode()
+    else:
+        return {
+            "error": (
+                f"result is {output.stat().st_size // (1024 * 1024)} MB with no R2 bucket or network "
+                "volume configured; set R2_BUCKET or attach a volume"
+            )
+        }
+    return response
+
+
 def handler(job):
     job_input = job.get("input") or {}
     started = time.time()
     work = Path(tempfile.mkdtemp(prefix="musetalk_", dir="/tmp"))
 
     try:
-        audio = _resolve_media(job_input, "audio", work)
-        if audio is None:
-            raise InputError("audio_url or audio_b64 is required")
+        mode = str(job_input.get("mode", "lipsync"))
+        if mode not in {"lipsync", "animate", "present"}:
+            raise InputError(f"unknown mode {mode!r}; use lipsync, animate or present")
 
         face = _resolve_media(job_input, "video", work) or _resolve_media(job_input, "image", work)
         if face is None:
             raise InputError("one of video_url, video_b64, image_url or image_b64 is required")
+
+        # animate and present both begin by giving a still portrait some life. present then hands the
+        # result to MuseTalk as the face to lip-sync, which is the whole point of chaining them here.
+        animated = None
+        if mode in {"animate", "present"}:
+            animated = _animate(job_input, face, work)
+            if mode == "animate":
+                return _deliver(animated, job_input, started, work, extra={"mode": "animate"})
+            face = animated
+
+        audio = _resolve_media(job_input, "audio", work)
+        if audio is None:
+            raise InputError("audio_url or audio_b64 is required")
 
         # MuseTalk reads its tasks from a YAML config rather than CLI arguments
         result_dir = work / "results"
@@ -173,33 +268,7 @@ def handler(job):
             }
         output = produced[-1]
 
-        response = {
-            "seconds": round(time.time() - started, 1),
-            "size_bytes": output.stat().st_size,
-        }
-        if job_input.get("project"):
-            response["project"] = job_input["project"]
-
-        key = job_input.get("output_key") or f"musetalk/{uuid.uuid4()}.mp4"
-        url = _upload(output, key)
-        if url:
-            response["video_url"] = url
-            response["output_key"] = key
-        elif VOLUME_DIR.is_dir():
-            destination = VOLUME_DIR / key
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(output, destination)
-            response["video_path"] = str(destination)
-        elif output.stat().st_size <= INLINE_LIMIT_MB * 1024 * 1024:
-            response["video_b64"] = base64.b64encode(output.read_bytes()).decode()
-        else:
-            return {
-                "error": (
-                    f"result is {output.stat().st_size // (1024 * 1024)} MB with no R2 bucket or "
-                    "network volume configured; set R2_BUCKET or attach a volume"
-                )
-            }
-        return response
+        return _deliver(output, job_input, started, work, extra={"mode": mode})
 
     except InputError as exc:
         return {"error": str(exc)}
