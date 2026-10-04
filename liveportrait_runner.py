@@ -52,6 +52,26 @@ def pipeline():
     from src.config.crop_config import CropConfig
     from src.config.inference_config import InferenceConfig
     from src.live_portrait_pipeline import LivePortraitPipeline
+    from src.utils.cropper import Cropper
+
+    # Keep landmark.onnx on the CPU.
+    #
+    # LivePortraitPipeline builds `Cropper(crop_cfg=crop_cfg)` without forwarding a device flag, so the
+    # Cropper defaults to CUDA and wants onnxruntime-gpu. That package is pinned to 1.18 upstream, which
+    # expects CUDA 12, while this image is CUDA 11.7 -- matching wheels to toolkits here is a whole class of
+    # breakage for no benefit. landmark.onnx runs once per source portrait (the driving video is not
+    # cropped), so CPU costs a few hundred milliseconds per avatar, paid once and cached.
+    #
+    # Patched as a subclass on the module the pipeline resolves the name from, the same way the detector is,
+    # so neither the checkout nor the upstream call site is edited.
+    import src.live_portrait_pipeline as lp_pipeline
+
+    class _CpuCropper(Cropper):
+        def __init__(self, **kwargs):
+            kwargs.setdefault("flag_force_cpu", True)
+            super().__init__(**kwargs)
+
+    lp_pipeline.Cropper = _CpuCropper
 
     missing = [
         name for name in (

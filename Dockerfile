@@ -1,7 +1,17 @@
-# MuseTalk 1.5 as a RunPod serverless worker.
-# Licence note: MuseTalk code and weights are MIT. We deliberately do NOT download the syncnet
-# checkpoint (ByteDance/LatentSync, OpenRAIL++) — it is only needed for training, not inference,
-# so the image stays permissively licensed.
+# MuseTalk 1.5 and LivePortrait as one RunPod serverless worker.
+#
+# MuseTalk syncs a mouth to audio; LivePortrait gives a still portrait head motion first. Together they
+# make a presentation video, and keeping them in one image means a job pays one cold start on ~15 GB
+# rather than two, with no intermediate clip crossing the network.
+#
+# Licences: MuseTalk and LivePortrait are both MIT, and so are LivePortrait's own weights.
+#
+# Two sets of weights are deliberately absent:
+#   * MuseTalk's syncnet checkpoint (ByteDance/LatentSync, OpenRAIL++) is only used for training.
+#   * InsightFace's pretrained models, which LivePortrait's Cropper loads by default, are released for
+#     non-commercial research only. mediapipe_face.py replaces them with MediaPipe (Apache 2.0), and
+#     verify_liveportrait.py fails the build if they ever reappear on disk -- a rebuild that pulled them
+#     back in would be an infringement rather than a bug.
 FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
@@ -36,5 +46,27 @@ RUN python download_weights.py
 RUN rm -f /opt/conda/bin/ffmpeg /opt/conda/bin/ffprobe  && ffmpeg -hide_banner -h encoder=libx264 > /dev/null  && ffmpeg -hide_banner -version | head -1
 
 ENV FFMPEG_PATH=/usr/bin
+
+# LivePortrait (MIT) animates a still portrait so the presenter has head motion before MuseTalk syncs the
+# mouth. One image rather than two endpoints: a presentation job then pays a single cold start on a ~15 GB
+# image instead of two, and the intermediate clip never leaves the worker.
+RUN git clone --depth 1 https://github.com/KwaiVGI/LivePortrait.git /app/LivePortrait
+
+# Only requirements_base.txt, deliberately. The full requirements.txt adds transformers==4.38.0, which
+# would repin the version MuseTalk needs -- the same shape of fault as capping huggingface_hub did. gradio
+# is dropped because the demo UI is never started here, and onnxruntime is the CPU build: upstream pins
+# onnxruntime-gpu==1.18, which expects CUDA 12 while this image is 11.7, and landmark.onnx runs once per
+# portrait so the CPU cost is paid once per avatar. liveportrait_runner forces that choice explicitly.
+RUN grep -vE '^(gradio|onnxruntime)' /app/LivePortrait/requirements_base.txt > /tmp/lp_req.txt  && pip install --no-cache-dir -r /tmp/lp_req.txt  && pip install --no-cache-dir onnxruntime mediapipe  && python -c "import transformers, huggingface_hub; print('after LivePortrait deps: transformers', transformers.__version__, '| hub', huggingface_hub.__version__)"
+
+COPY mediapipe_face.py /app/MuseTalk/mediapipe_face.py
+COPY liveportrait_runner.py /app/MuseTalk/liveportrait_runner.py
+
+# Proven at build time: the weights we may use are present, the ones we may not are absent, the MediaPipe
+# substitution takes hold, and LivePortrait imports. The licence half is the point -- a rebuild that
+# quietly pulled InsightFace back in would be an infringement, not a bug, so it fails the build.
+COPY verify_liveportrait.py /app/MuseTalk/verify_liveportrait.py
+RUN python verify_liveportrait.py
+
 COPY handler.py /app/MuseTalk/handler.py
 CMD ["python", "-u", "handler.py"]
