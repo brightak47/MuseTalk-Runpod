@@ -84,4 +84,33 @@ from src.config.inference_config import InferenceConfig  # noqa: E402,F401
 from src.live_portrait_pipeline import LivePortraitPipeline  # noqa: E402,F401
 
 print("LivePortrait pipeline imports")
+
+# 6. The two upstream behaviours the blink support rests on. Both failed silently once already: eye
+# retargeting read a channel we were filling with the wrong shape, so the blinks simply never appeared and
+# nothing complained. These assert the contract instead of trusting it.
+import inspect  # noqa: E402
+
+cfg_fields = ArgumentConfig.__dataclass_fields__
+for field in ("flag_eye_retargeting", "flag_lip_retargeting", "flag_relative_motion", "animation_region"):
+    if field not in cfg_fields:
+        sys.exit(f"ArgumentConfig no longer has {field}; animate() passes it and would raise")
+
+import src.live_portrait_pipeline as lp_pipeline  # noqa: E402
+import src.live_portrait_wrapper as lp_wrapper  # noqa: E402
+
+pipeline_src = inspect.getsource(lp_pipeline.LivePortraitPipeline.execute)
+# The absolute-motion branch is what keeps head pose alive while retargeting is on. If upstream collapses
+# these two branches, blinks would start costing us the sway, and only a human watching would notice.
+if "x_d_i_new = x_d_i_new + \\" not in pipeline_src:
+    sys.exit("the absolute-motion retargeting branch is gone; enabling eye retargeting would kill head pose")
+if "flag_eye_retargeting and source_lmk is not None" not in pipeline_src:
+    sys.exit("c_eyes_lst is no longer gated the way idle_template assumes; blinks may silently stop")
+print("retargeting branch preserves head pose")
+
+ratio_src = inspect.getsource(lp_wrapper.LivePortraitWrapper.calc_combined_eye_ratio)
+# idle_template writes (1, 2) arrays precisely because this indexes twice. A flat array raises IndexError.
+if "c_d_eyes_i[0][0]" not in ratio_src:
+    sys.exit("calc_combined_eye_ratio changed its indexing; the c_eyes_lst shape in idle_template is now wrong")
+print("c_eyes_lst shape contract holds")
+
 print("liveportrait verification passed")

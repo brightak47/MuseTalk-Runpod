@@ -110,6 +110,22 @@ def animate(source_image: Path, driving: Path, out_dir: Path, **options) -> Path
     A template is the better input for an avatar: it is numeric pose data rather than footage, so it carries
     no likeness, is deterministic between runs, and costs nothing to store. `execute` returns the animation
     and a side-by-side comparison; only the animation is wanted.
+
+    Blinks require `eye_retargeting`, and that forces absolute motion. The reason is a single line in
+    LivePortrait's pipeline: once any retargeting is on, the relative-motion path rebuilds the keypoints as
+
+        x_d_i_new = x_s + eyes_delta + lip_delta
+
+    which discards the pose term computed just above it, so the head stops moving. The absolute path is
+
+        x_d_i_new = x_d_i_new + eyes_delta + lip_delta
+
+    and keeps both. Absolute motion is safe here only because idle_template() is built from this portrait's
+    own latents, so R_new = R_d_i and t_new are already the source's own orientation plus the sway -- for a
+    template taken from somebody else's face it would transfer their head position outright.
+
+    Upstream marks flag_eye_retargeting "not recommend to be True, WIP". It is used anyway because it is the
+    only path that reads c_eyes_lst, but that is a reason to look at the output rather than trust it.
     """
     import sys
 
@@ -118,16 +134,26 @@ def animate(source_image: Path, driving: Path, out_dir: Path, **options) -> Path
     from src.config.argument_config import ArgumentConfig
 
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    eye_retargeting = bool(options.get("eye_retargeting", True))
+    # Forced rather than merely defaulted: the two together are the trap described above, and the failure is
+    # silent -- a clip that looks fine until you notice the head never moves.
+    relative_motion = False if eye_retargeting else bool(options.get("relative_motion", True))
+
     args = ArgumentConfig(
         source=str(source_image),
         driving=str(driving),
         output_dir=str(out_dir),
-        # Pose only by default: see the module docstring on why the mouth is left for MuseTalk.
+        # Pose only by default: see the module docstring on why the mouth is left for MuseTalk. Note that
+        # with a template driver this has no effect on expression at all -- LivePortrait gates the "exp"
+        # branch on flag_is_driving_video -- so "all" and "pose" produce byte-identical output here.
         animation_region=str(options.get("animation_region", "pose")),
         flag_normalize_lip=bool(options.get("normalize_lip", False)),
-        # Relative motion means a template made from any face produces the same movement on this portrait,
-        # which is what makes one template reusable across an avatar library.
-        flag_relative_motion=bool(options.get("relative_motion", True)),
+        flag_relative_motion=relative_motion,
+        # The only place c_eyes_lst is ever read.
+        flag_eye_retargeting=eye_retargeting,
+        # Left off: MuseTalk owns the mouth, and turning this on would hand it to LivePortrait.
+        flag_lip_retargeting=False,
         driving_option=str(options.get("driving_option", "expression-friendly")),
         driving_multiplier=float(options.get("driving_multiplier", 1.0)),
         flag_stitching=bool(options.get("stitching", True)),
@@ -167,6 +193,7 @@ def idle_template(source_image: Path, seconds: float, fps: int, out_path: Path, 
         sys.path.insert(0, str(LIVEPORTRAIT_DIR))
     from src.utils.camera import get_rotation_matrix
     from src.utils.io import load_image_rgb
+    from src.utils.retargeting_utils import calc_eye_close_ratio
 
     pipe = pipeline()
     wrapper = pipe.live_portrait_wrapper
@@ -175,6 +202,12 @@ def idle_template(source_image: Path, seconds: float, fps: int, out_path: Path, 
     crop = pipe.cropper.crop_source_image(img_rgb, pipe.cropper.crop_cfg)
     if crop is None:
         raise RuntimeError("no face found in the source portrait")
+
+    # The eye-open value LivePortrait compares against is an aspect ratio from the 203-point landmarks, not
+    # an abstract 0-1 openness. Measuring this portrait's own ratio makes the retarget a true no-op between
+    # blinks and self-calibrates per face, where a hardcoded constant would nudge every avatar's eyes
+    # towards whatever number happened to be chosen.
+    open_ratio = float(calc_eye_close_ratio(crop["lmk_crop"][None])[0][0])
 
     prepared = wrapper.prepare_source(crop["img_crop_256x256"])
     info = wrapper.get_kp_info(prepared)
@@ -185,6 +218,8 @@ def idle_template(source_image: Path, seconds: float, fps: int, out_path: Path, 
     sway_period = float(options.get("sway_seconds", 6.0))   # one slow cycle; faster reads as fidgeting
     blink_every = float(options.get("blink_seconds", 4.0))  # roughly a natural resting blink rate
     blink_frames = max(2, int(round(0.12 * fps)))           # ~120 ms, about how long a blink takes
+    # Not 0.0: a fully-collapsed ratio asks the retargeting network for a state it never saw in training.
+    closed_ratio = float(options.get("blink_closed_ratio", 0.02))
 
     base_pitch = float(info["pitch"].detach().cpu().numpy().reshape(-1)[0])
     base_yaw = float(info["yaw"].detach().cpu().numpy().reshape(-1)[0])
@@ -218,13 +253,18 @@ def idle_template(source_image: Path, seconds: float, fps: int, out_path: Path, 
             "x_s": as_numpy(x_s),
         })
 
-        # Eyes open normally; closed for a few frames at each blink. Two values, one per eye.
+        # Eyes open normally; closed for a few frames at each blink.
+        #
+        # Shaped (1, 2) to match what LivePortrait's own calc_ratio() produces, because calc_combined_eye_ratio
+        # indexes c_d_eyes_i[0][0]. A flat two-element array raises IndexError there, which is why the earlier
+        # version of this file could never have blinked even with retargeting switched on.
         into_blink = i % max(1, int(round(blink_every * fps)))
         closed = into_blink < blink_frames
-        openness = 0.0 if closed else 0.38
-        template["c_eyes_lst"].append(np.array([openness, openness], dtype=np.float32))
-        # The mouth stays shut: MuseTalk owns it from here.
-        template["c_lip_lst"].append(np.array([0.0], dtype=np.float32))
+        ratio = closed_ratio if closed else open_ratio
+        template["c_eyes_lst"].append(np.array([[ratio, ratio]], dtype=np.float32))
+        # The mouth stays shut: MuseTalk owns it from here. Shaped (1, 1) to match calc_ratio() as well,
+        # though nothing reads it while flag_lip_retargeting is off.
+        template["c_lip_lst"].append(np.array([[0.0]], dtype=np.float32))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as handle:

@@ -132,19 +132,30 @@ def _animate(job_input: dict, portrait: Path, work: Path) -> Path:
     seconds = float(job_input.get("seconds", 6))
 
     driving = _resolve_media(job_input, "driving", work)
-    if driving is None:
+    generated = driving is None
+    if generated:
         driving = lp.idle_template(
             portrait, seconds=seconds, fps=fps, out_path=work / "idle.pkl",
-            sway_degrees=float(job_input.get("sway_degrees", 2.0)),
-            sway_seconds=float(job_input.get("sway_seconds", 6.0)),
+            # 8 degrees over a 4 second cycle, both measured rather than guessed: 2 and 3.5 were invisible
+            # in side-by-side strips and 8 still read as a person rather than a metronome.
+            sway_degrees=float(job_input.get("sway_degrees", 8.0)),
+            sway_seconds=float(job_input.get("sway_seconds", 4.0)),
             blink_seconds=float(job_input.get("blink_seconds", 4.0)),
+            blink_closed_ratio=float(job_input.get("blink_closed_ratio", 0.02)),
         )
+
+    # Only defaulted on for a generated template. Eye retargeting forces absolute motion (see animate), and
+    # absolute motion applied to footage of a different person transfers their head position to this
+    # portrait rather than their movement. A generated template is built from this portrait's own latents,
+    # so it has no such position to transfer; supplied footage does.
+    eye_retargeting = bool(job_input.get("eye_retargeting", generated))
 
     return lp.animate(
         portrait, driving, work / "animated",
         animation_region=job_input.get("animation_region", "pose"),
         normalize_lip=job_input.get("normalize_lip", False),
         driving_multiplier=job_input.get("driving_multiplier", 1.0),
+        eye_retargeting=eye_retargeting,
     )
 
 
