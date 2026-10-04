@@ -3,7 +3,7 @@
 Both halves matter. The first is the ordinary check that an import works. The second is a licence
 guarantee: InsightFace's pretrained models are non-commercial, LivePortrait's Cropper loads them by
 default, and a future rebuild that quietly pulled them in would be an infringement rather than a bug. So
-the build fails if those files appear on disk, and fails if the MediaPipe replacement cannot be installed.
+the build fails if those files appear on disk, and fails if the YuNet replacement cannot be installed.
 """
 
 import sys
@@ -40,21 +40,31 @@ if strays:
     )
 print("no InsightFace models on disk")
 
-# 3. MediaPipe, and the substitution actually taking hold.
+# 3. YuNet, and the substitution actually taking hold.
 sys.path.insert(0, "/app/MuseTalk")
-import mediapipe  # noqa: E402
+import cv2  # noqa: E402
 
-print("mediapipe", mediapipe.__version__)
+if not hasattr(cv2, "FaceDetectorYN"):
+    sys.exit(f"OpenCV {cv2.__version__} has no FaceDetectorYN; YuNet needs 4.5.4 or newer")
+print(f"opencv {cv2.__version__} with FaceDetectorYN")
 
-import mediapipe_face  # noqa: E402
+import face_detect  # noqa: E402
 
-mediapipe_face.install(str(LP))
+if not face_detect.YUNET_MODEL.is_file():
+    sys.exit(f"YuNet model missing at {face_detect.YUNET_MODEL}")
+print(f"yunet model present ({face_detect.YUNET_MODEL.stat().st_size / 1e3:.0f} KB)")
+
+# Construct it for real: a model file that exists but will not load should fail the build.
+face_detect.YuNetFaceAnalysis().prepare(det_size=(320, 320), det_thresh=0.6)
+print("YuNet detector loads")
+
+face_detect.install(str(LP))
 sys.path.insert(0, str(LP))
 from src.utils import cropper as lp_cropper  # noqa: E402
 
-if lp_cropper.FaceAnalysisDIY is not mediapipe_face.MediaPipeFaceAnalysis:
-    sys.exit("the MediaPipe replacement did not take hold; the Cropper would still load InsightFace")
-print("Cropper detector is MediaPipeFaceAnalysis")
+if lp_cropper.FaceAnalysisDIY is not face_detect.YuNetFaceAnalysis:
+    sys.exit("the YuNet replacement did not take hold; the Cropper would still load InsightFace")
+print("Cropper detector is YuNetFaceAnalysis")
 
 # 4. LivePortrait's own geometry accepts five points, which is what makes the substitution legitimate.
 import numpy as np  # noqa: E402

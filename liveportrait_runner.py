@@ -15,8 +15,9 @@ transferring the driving clip's mouth would fight MuseTalk for control of the sa
 head movement only, which composes cleanly. "all" adds blinks and expression at the cost of that conflict,
 and `flag_normalize_lip` closes the mouth first to reduce it; both are exposed rather than chosen here.
 
-InsightFace is not used. mediapipe_face.install() replaces the detector before the pipeline is built -- see
-that module for why the substitution is small and what it would mean to get it wrong.
+InsightFace is not used. face_detect.install() replaces the detector with YuNet (OpenCV Zoo, MIT) before
+the pipeline is built -- see that module for why the substitution is small, and why YuNet rather than
+MediaPipe, which could not be reconciled with this image's numpy.
 """
 
 import os
@@ -42,10 +43,10 @@ def pipeline():
 
     import sys
 
-    import mediapipe_face
+    import face_detect
 
     # Before anything imports the Cropper, so the InsightFace class is never the one constructed.
-    mediapipe_face.install(str(LIVEPORTRAIT_DIR))
+    face_detect.install(str(LIVEPORTRAIT_DIR))
     if str(LIVEPORTRAIT_DIR) not in sys.path:
         sys.path.insert(0, str(LIVEPORTRAIT_DIR))
 

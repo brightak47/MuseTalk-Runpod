@@ -9,7 +9,7 @@ Deliberately omitted, and both omissions are licence decisions rather than size 
   * InsightFace's buffalo_l models (det_10g.onnx, 2d106det.onnx), which LivePortrait's Cropper would
     otherwise load. InsightFace releases its pretrained models for non-commercial research only, and the
     fact that KwaiVGI's weights repo redistributes them under its own MIT card does not change their terms.
-    mediapipe_face.py replaces them with MediaPipe (Apache 2.0); see it for why that substitution is small.
+    face_detect.py replaces them with YuNet (OpenCV Zoo, MIT); see it for why that substitution is small.
 
 LivePortrait's own weights ARE included and are MIT: the four base models, the stitching/retargeting
 module, and landmark.onnx, which is what actually produces the precise landmarks.
@@ -62,6 +62,29 @@ def fetch(repo_id: str, filename: str, destination: str) -> Path:
     return target
 
 
+# YuNet, the face detector that stands in for InsightFace. MIT, about 340 KB, and not on HuggingFace, so
+# it is fetched by URL the same way the face-parse weight is.
+YUNET_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
+    "face_detection_yunet_2023mar.onnx"
+)
+
+
+def fetch_yunet() -> Path:
+    destination = MODELS / "yunet" / "face_detection_yunet.onnx"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_file() and destination.stat().st_size > 100_000:
+        print(f"  yunet already present ({destination.stat().st_size / 1e3:.0f} KB)")
+        return destination
+    with urllib.request.urlopen(YUNET_URL, timeout=120) as response, open(destination, "wb") as handle:
+        shutil.copyfileobj(response, handle)
+    size = destination.stat().st_size
+    if size < 100_000:
+        sys.exit(f"YuNet model looks wrong: {size} bytes from {YUNET_URL}")
+    print(f"  yunet -> {destination} ({size / 1e3:.0f} KB)")
+    return destination
+
+
 def main() -> int:
     print("downloading MuseTalk inference weights", flush=True)
     for repo_id, filename, destination in DOWNLOADS:
@@ -72,10 +95,14 @@ def main() -> int:
     urllib.request.urlretrieve(RESNET18_URL, target)
     print(f"  {RESNET18_URL} -> {target} ({target.stat().st_size / 1e6:.1f} MB)", flush=True)
 
+    yunet = fetch_yunet()
+
     # Fail the build here rather than at the first inference request.
     missing = [d for _, _, d in DOWNLOADS if not (MODELS / d).is_file()]
     if not target.is_file():
         missing.append(RESNET18_DEST)
+    if not yunet.is_file():
+        missing.append(str(yunet))
     if missing:
         print("missing after download: " + ", ".join(missing), file=sys.stderr)
         return 1

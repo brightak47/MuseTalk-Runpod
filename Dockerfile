@@ -9,7 +9,7 @@
 # Two sets of weights are deliberately absent:
 #   * MuseTalk's syncnet checkpoint (ByteDance/LatentSync, OpenRAIL++) is only used for training.
 #   * InsightFace's pretrained models, which LivePortrait's Cropper loads by default, are released for
-#     non-commercial research only. mediapipe_face.py replaces them with MediaPipe (Apache 2.0), and
+#     non-commercial research only. face_detect.py replaces them with YuNet (OpenCV Zoo, MIT), and
 #     verify_liveportrait.py fails the build if they ever reappear on disk -- a rebuild that pulled them
 #     back in would be an infringement rather than a bug.
 FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
@@ -54,12 +54,16 @@ RUN git clone --depth 1 https://github.com/KwaiVGI/LivePortrait.git /app/LivePor
 
 # Only requirements_base.txt, deliberately. The full requirements.txt adds transformers==4.38.0, which
 # would repin the version MuseTalk needs -- the same shape of fault as capping huggingface_hub did. gradio
+#
+# No mediapipe either. It was the first attempt at replacing InsightFace and it pulls in TensorFlow,
+# which then failed against this image's numpy -- MuseTalk, LivePortrait and TensorFlow each want a
+# different one. YuNet runs through the OpenCV already installed here and adds no dependency at all.
 # is dropped because the demo UI is never started here, and onnxruntime is the CPU build: upstream pins
 # onnxruntime-gpu==1.18, which expects CUDA 12 while this image is 11.7, and landmark.onnx runs once per
 # portrait so the CPU cost is paid once per avatar. liveportrait_runner forces that choice explicitly.
-RUN grep -vE '^(gradio|onnxruntime)' /app/LivePortrait/requirements_base.txt > /tmp/lp_req.txt  && pip install --no-cache-dir -r /tmp/lp_req.txt  && pip install --no-cache-dir onnxruntime mediapipe  && python -c "import transformers, huggingface_hub; print('after LivePortrait deps: transformers', transformers.__version__, '| hub', huggingface_hub.__version__)"
+RUN grep -vE '^(gradio|onnxruntime)' /app/LivePortrait/requirements_base.txt > /tmp/lp_req.txt  && pip install --no-cache-dir -r /tmp/lp_req.txt  && pip install --no-cache-dir onnxruntime  && python -c "import transformers, huggingface_hub; print('after LivePortrait deps: transformers', transformers.__version__, '| hub', huggingface_hub.__version__)"
 
-COPY mediapipe_face.py /app/MuseTalk/mediapipe_face.py
+COPY face_detect.py /app/MuseTalk/face_detect.py
 COPY liveportrait_runner.py /app/MuseTalk/liveportrait_runner.py
 
 # Proven at build time: the weights we may use are present, the ones we may not are absent, the MediaPipe
