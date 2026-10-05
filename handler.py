@@ -136,9 +136,11 @@ def _animate(job_input: dict, portrait: Path, work: Path) -> Path:
     if generated:
         driving = lp.idle_template(
             portrait, seconds=seconds, fps=fps, out_path=work / "idle.pkl",
-            # 8 degrees over a 4 second cycle, both measured rather than guessed: 2 and 3.5 were invisible
-            # in side-by-side strips and 8 still read as a person rather than a metronome.
-            sway_degrees=float(job_input.get("sway_degrees", 8.0)),
+            # No head motion. 2, 3.5, 5 and 8 degrees were all generated and compared: the small ones were
+            # invisible and the large ones read as a wobble rather than as a person, because a synthesised
+            # sine has none of the reasons a real head moves. Blinking is left on, since it is genuinely
+            # periodic and involuntary and does survive being watched.
+            sway_degrees=float(job_input.get("sway_degrees", 0.0)),
             sway_seconds=float(job_input.get("sway_seconds", 4.0)),
             blink_seconds=float(job_input.get("blink_seconds", 4.0)),
             blink_closed_ratio=float(job_input.get("blink_closed_ratio", 0.02)),

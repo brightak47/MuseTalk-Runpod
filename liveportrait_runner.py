@@ -1,8 +1,13 @@
 """LivePortrait: turn one still portrait into a short clip of a presenter who looks alive.
 
-This is the first half of a presentation video. MuseTalk syncs a mouth to audio but cannot invent head
-motion, so driving it with a still gives a presenter who never moves. LivePortrait supplies that motion --
-head sway, and blinks if asked for -- and MuseTalk then syncs the mouth onto the result.
+This is the first half of a presentation video. MuseTalk syncs a mouth to audio and touches nothing else, so
+driving it with a still gives a presenter who never blinks for the length of a lesson. LivePortrait supplies
+that, and MuseTalk then syncs the mouth onto the result.
+
+Blinking only, by default. Head sway was built first and tried at four amplitudes; none of them looked right.
+A sine has none of the reasons a real head moves -- emphasis, thought, addressing someone -- so small
+amplitudes were invisible and large ones read as a wobble. A blink has no such problem, because a blink
+really is periodic and involuntary. The sway knob remains for anyone who disagrees, defaulted to zero.
 
 The economics are why it is here rather than a video model. This is a 512x512 warping network, so the idle
 clip costs cents and is generated once per avatar and cached; Wan 2.2 cost $0.086-$0.129 for the same job.
@@ -219,7 +224,7 @@ def animate(source_image: Path, driving: Path, out_dir: Path, **options) -> Path
 
 def idle_template(source_image: Path, seconds: float, fps: int, out_path: Path, **options) -> Path:
     """
-    Make a driving template of a presenter sitting still: slow head sway, optional blinks, mouth untouched.
+    Make a driving template of a presenter sitting still: blinks, no head movement, mouth untouched.
 
     Built from the source portrait's own latents rather than from footage, so the face never drifts towards
     somebody else's: every frame reuses the source's scale, expression, keypoints and translation, and only
@@ -258,12 +263,21 @@ def idle_template(source_image: Path, seconds: float, fps: int, out_path: Path, 
     x_s = wrapper.transform_keypoint(info)
 
     n_frames = max(1, int(round(seconds * fps)))
-    sway_deg = float(options.get("sway_degrees", 2.0))      # a presenter's head, not a metronome
-    sway_period = float(options.get("sway_seconds", 6.0))   # one slow cycle; faster reads as fidgeting
+    # Off by default. A sinusoidal sway is the obvious way to synthesise head motion and it does not survive
+    # being watched: a real presenter's head moves because they are emphasising something, and a smooth cycle
+    # that never does reads as a slow wobble instead. Blinking has no such problem -- it genuinely is periodic
+    # and involuntary -- so that is what is left. The knob stays because the machinery is the same either way.
+    sway_deg = float(options.get("sway_degrees", 0.0))
+    sway_period = float(options.get("sway_seconds", 4.0))
     blink_every = float(options.get("blink_seconds", 4.0))  # roughly a natural resting blink rate
     blink_frames = max(2, int(round(0.12 * fps)))           # ~120 ms, about how long a blink takes
     # Not 0.0: a fully-collapsed ratio asks the retargeting network for a state it never saw in training.
     closed_ratio = float(options.get("blink_closed_ratio", 0.02))
+
+    # With no sway the rotation is the source's own, identical in every frame, so it is built once rather than
+    # recomputed per frame from a sine that is always zero -- and, more to the point, every frame then gets a
+    # bit-identical R instead of one that differs in the last decimal place and jitters.
+    still_head = sway_deg == 0.0
 
     base_pitch = float(info["pitch"].detach().cpu().numpy().reshape(-1)[0])
     base_yaw = float(info["yaw"].detach().cpu().numpy().reshape(-1)[0])
@@ -274,23 +288,30 @@ def idle_template(source_image: Path, seconds: float, fps: int, out_path: Path, 
 
     import torch
 
-    template = {"n_frames": n_frames, "output_fps": fps, "motion": [], "c_eyes_lst": [], "c_lip_lst": []}
-    for i in range(n_frames):
-        phase = 2.0 * np.pi * i / max(1.0, sway_period * fps)
-        # Yaw and pitch on different periods so the motion never repeats on an obvious beat.
-        yaw = base_yaw + sway_deg * np.sin(phase)
-        pitch = base_pitch + (sway_deg * 0.4) * np.sin(phase * 0.7 + 1.1)
-        roll = base_roll + (sway_deg * 0.2) * np.sin(phase * 0.5)
-
-        R = get_rotation_matrix(
+    def rotation(pitch, yaw, roll):
+        return get_rotation_matrix(
             torch.tensor([[pitch]], dtype=torch.float32),
             torch.tensor([[yaw]], dtype=torch.float32),
             torch.tensor([[roll]], dtype=torch.float32),
         )
 
+    still_R = rotation(base_pitch, base_yaw, base_roll).cpu().numpy().astype(np.float32) if still_head else None
+
+    template = {"n_frames": n_frames, "output_fps": fps, "motion": [], "c_eyes_lst": [], "c_lip_lst": []}
+    for i in range(n_frames):
+        if still_head:
+            R_np = still_R
+        else:
+            phase = 2.0 * np.pi * i / max(1.0, sway_period * fps)
+            # Yaw and pitch on different periods so the motion never repeats on an obvious beat.
+            yaw = base_yaw + sway_deg * np.sin(phase)
+            pitch = base_pitch + (sway_deg * 0.4) * np.sin(phase * 0.7 + 1.1)
+            roll = base_roll + (sway_deg * 0.2) * np.sin(phase * 0.5)
+            R_np = rotation(pitch, yaw, roll).cpu().numpy().astype(np.float32)
+
         template["motion"].append({
             "scale": as_numpy(info["scale"]),
-            "R": R.cpu().numpy().astype(np.float32),
+            "R": R_np,
             "exp": as_numpy(info["exp"]),
             "t": as_numpy(info["t"]),
             "kp": as_numpy(info["kp"]),
